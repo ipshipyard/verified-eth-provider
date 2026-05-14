@@ -1,4 +1,5 @@
-import { assertBlockFreshness } from './helpers.ts'
+import { assertBlockFreshness, validateTrustedBlock } from './helpers.ts'
+import { ethCall } from './json-rpc.ts'
 import type {
   QuorumTrustedBlockSelectorConfig,
   QuorumTrustedBlockSelectorOptions,
@@ -6,83 +7,99 @@ import type {
   TrustedBlockProvider
 } from './types.ts'
 
-interface JsonRpcResponse<T> {
-  result: T
-  error?: { code: number, message: string }
-}
-
-const MAINNET_CHAIN_ID_HEX = '0x1'
-
-async function ethCall<T> (url: string, method: string, params: unknown[], signal?: AbortSignal): Promise<T> {
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-    signal
-  })
-
-  if (!response.ok) {
-    throw new Error(`RPC ${url} returned HTTP ${response.status} for ${method}`)
+function parseTrustedBlock (value: unknown, rpcUrl: string, blockRef: string): TrustedBlock {
+  if (value == null || typeof value !== 'object') {
+    throw new Error(`RPC ${rpcUrl} returned invalid block payload for ${blockRef}`)
   }
 
-  const body: JsonRpcResponse<T> = await response.json()
+  // Cast to a record first, then let validateTrustedBlock validate and normalize
+  // every field. Wrap any validation error with the RPC URL for context.
+  const block = value as Record<string, unknown>
+  try {
+    // Return a canonical TrustedBlock shape only, intentionally discarding extra fields.
+    return validateTrustedBlock({
+      number: block.number as string,
+      hash: block.hash as string,
+      timestamp: block.timestamp as string,
+      stateRoot: block.stateRoot as string,
+      baseFeePerGas: block.baseFeePerGas != null ? block.baseFeePerGas as string : undefined,
+      gasLimit: block.gasLimit as string,
+      miner: block.miner as string,
+      mixHash: block.mixHash as string
+    })
+  } catch (err) {
+    throw new Error(`RPC ${rpcUrl} returned invalid block for ${blockRef}: ${err instanceof Error ? err.message : String(err)}`)
+  }
+}
 
-  if (body.error != null) {
-    throw new Error(`RPC ${url} error for ${method}: ${body.error.message}`)
+function assertMatchingTrustedBlock (label: string, rpcUrl: string, expected: TrustedBlock, actual: TrustedBlock): void {
+  if (actual.number !== expected.number) {
+    throw new Error(`${label} (${rpcUrl}) block number ${actual.number} does not match primary ${expected.number}`)
   }
 
-  return body.result
-}
+  if (actual.hash !== expected.hash) {
+    throw new Error(`${label} (${rpcUrl}) block hash ${actual.hash} does not match primary ${expected.hash} at block ${expected.number}`)
+  }
 
-async function getChainId (rpcUrl: string, signal?: AbortSignal): Promise<string> {
-  return ethCall<string>(rpcUrl, 'eth_chainId', [], signal)
-}
+  if (actual.timestamp !== expected.timestamp) {
+    throw new Error(`${label} (${rpcUrl}) timestamp ${actual.timestamp} does not match primary ${expected.timestamp} at block ${expected.number}`)
+  }
 
-async function assertMainnet (rpcUrl: string, signal?: AbortSignal): Promise<void> {
-  const chainId = await getChainId(rpcUrl, signal)
+  if (actual.stateRoot !== expected.stateRoot) {
+    throw new Error(`${label} (${rpcUrl}) stateRoot ${actual.stateRoot} does not match primary ${expected.stateRoot} at block ${expected.number}`)
+  }
 
-  if (chainId.toLowerCase() !== MAINNET_CHAIN_ID_HEX) {
-    throw new Error(`RPC ${rpcUrl} is not mainnet (chainId=${chainId})`)
+  if (actual.baseFeePerGas !== expected.baseFeePerGas) {
+    throw new Error(`${label} (${rpcUrl}) baseFeePerGas ${String(actual.baseFeePerGas)} does not match primary ${String(expected.baseFeePerGas)} at block ${expected.number}`)
+  }
+
+  if (actual.gasLimit !== expected.gasLimit) {
+    throw new Error(`${label} (${rpcUrl}) gasLimit ${actual.gasLimit} does not match primary ${expected.gasLimit} at block ${expected.number}`)
+  }
+
+  if (actual.miner !== expected.miner) {
+    throw new Error(`${label} (${rpcUrl}) miner ${actual.miner} does not match primary ${expected.miner} at block ${expected.number}`)
+  }
+
+  if (actual.mixHash !== expected.mixHash) {
+    throw new Error(`${label} (${rpcUrl}) mixHash ${actual.mixHash} does not match primary ${expected.mixHash} at block ${expected.number}`)
   }
 }
 
 async function getBlockByNumber (rpcUrl: string, blockNumber: string, signal?: AbortSignal): Promise<TrustedBlock> {
-  const block = await ethCall<TrustedBlock | null>(rpcUrl, 'eth_getBlockByNumber', [blockNumber, false], signal)
+  const block = await ethCall<unknown>(rpcUrl, 'eth_getBlockByNumber', [blockNumber, false], signal)
 
   if (block == null) {
     throw new Error(`RPC ${rpcUrl} returned null block for ${blockNumber}`)
   }
 
-  return block
+  return parseTrustedBlock(block, rpcUrl, blockNumber)
 }
 
-async function confirmBlockHashWithWitnesses (block: TrustedBlock, witnessRpcs: [string, string], signal?: AbortSignal): Promise<void> {
+async function confirmBlockWithWitnesses (block: TrustedBlock, witnessRpcs: [string, string], signal?: AbortSignal): Promise<void> {
   const [witnessA, witnessB] = await Promise.all([
     getBlockByNumber(witnessRpcs[0], block.number, signal),
     getBlockByNumber(witnessRpcs[1], block.number, signal)
   ])
 
-  if (witnessA.hash.toLowerCase() !== block.hash.toLowerCase()) {
-    throw new Error(`Witness A (${witnessRpcs[0]}) block hash ${witnessA.hash} does not match primary ${block.hash} at block ${block.number}`)
-  }
-
-  if (witnessB.hash.toLowerCase() !== block.hash.toLowerCase()) {
-    throw new Error(`Witness B (${witnessRpcs[1]}) block hash ${witnessB.hash} does not match primary ${block.hash} at block ${block.number}`)
-  }
+  assertMatchingTrustedBlock('Witness A', witnessRpcs[0], block, witnessA)
+  assertMatchingTrustedBlock('Witness B', witnessRpcs[1], block, witnessB)
 }
 
+/**
+ * Creates a {@link TrustedBlockProvider} that selects a safe block by quorum: the primary RPC
+ * fetches the latest `safe` block and both witness RPCs must independently confirm the same
+ * TrustedBlock fields (number/hash/timestamp/stateRoot/baseFeePerGas/gasLimit/miner/mixHash) before it is trusted.
+ *
+ * All three RPC endpoints must point to Ethereum mainnet. No chain ID verification is performed —
+ * quorum detects endpoint disagreement, not unanimous misconfiguration.
+ */
 export function createQuorumTrustedBlockSelector (config: QuorumTrustedBlockSelectorConfig, options: QuorumTrustedBlockSelectorOptions = {}): TrustedBlockProvider {
   return async (signal?: AbortSignal): Promise<TrustedBlock> => {
     const { primaryRpc, witnessRpcs, maxSafeBlockAgeMs } = config
 
-    await Promise.all([
-      assertMainnet(primaryRpc, signal),
-      assertMainnet(witnessRpcs[0], signal),
-      assertMainnet(witnessRpcs[1], signal)
-    ])
-
     const safeBlock = await getBlockByNumber(primaryRpc, 'safe', signal)
-    await confirmBlockHashWithWitnesses(safeBlock, witnessRpcs, signal)
+    await confirmBlockWithWitnesses(safeBlock, witnessRpcs, signal)
     assertBlockFreshness(safeBlock, maxSafeBlockAgeMs)
 
     options.log?.('safe block from primary: %s hash=%s', safeBlock.number, safeBlock.hash)

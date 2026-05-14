@@ -50,10 +50,13 @@ const PRIMARY = 'https://primary.example/rpc'
 
 const trustedBlock = {
   number: '0x100',
-  hash: '0xabc123',
+  hash: `0x${'ab'.repeat(32)}`,
   timestamp: `0x${Math.floor(Date.now() / 1000).toString(16)}`,
-  stateRoot: '0xdef456',
-  baseFeePerGas: '0x1'
+  stateRoot: `0x${'cd'.repeat(32)}`,
+  baseFeePerGas: '0x1',
+  gasLimit: '0x1c9c380',
+  miner: '0x0000000000000000000000000000000000000000',
+  mixHash: '0x0000000000000000000000000000000000000000000000000000000000000000'
 }
 
 test('createVerifiedTransport accepts static trusted block', async () => {
@@ -62,11 +65,8 @@ test('createVerifiedTransport accepts static trusted block', async () => {
     trustedBlock
   })
 
-  const client = createPublicClient({ transport })
-  const block = await client.request({ method: 'eth_getBlockByNumber', params: ['latest', false] })
-
-  assert.deepEqual(block, trustedBlock)
   assert.equal(transport.trustedBlock.hash, trustedBlock.hash)
+  assert.equal(transport.trustedBlock.number, trustedBlock.number)
   await assert.doesNotReject(async () => transport.prewarmVerificationDependencies())
 })
 
@@ -82,25 +82,57 @@ test('createVerifiedTransport accepts async trusted block provider', async () =>
   })
 
   assert.equal(trustedBlockCalls, 1)
-
-  const client = createPublicClient({ transport })
-  const block = await client.request({ method: 'eth_getBlockByNumber', params: ['pending', false] })
-
-  assert.deepEqual(block, trustedBlock)
+  assert.equal(transport.trustedBlock.hash, trustedBlock.hash)
 })
 
-test('createVerifiedTransport still routes eth_chainId through verifier checks', async () => {
-  await withMockFetch([
-    { url: PRIMARY, method: 'eth_chainId', result: '0x1' }
-  ], async () => {
-    const transport = await createVerifiedTransport({
-      rpcUrl: PRIMARY,
-      trustedBlock
-    })
-
-    const client = createPublicClient({ transport })
-    const chainId = await client.request({ method: 'eth_chainId', params: [] })
-
-    assert.equal(chainId, '0x1')
+test('createVerifiedTransport rejects mismatched block parameters on supported methods', async () => {
+  const transport = await createVerifiedTransport({
+    rpcUrl: PRIMARY,
+    trustedBlock
   })
+
+  const client = createPublicClient({ transport })
+
+  await assert.rejects(
+    async () => await client.request({ method: 'eth_call', params: [{ to: '0x1111111111111111111111111111111111111111', data: '0x' }, '0x999'] }),
+    /must match trusted block/
+  )
+
+  await assert.rejects(
+    async () => await client.request({ method: 'eth_getCode', params: ['0x1111111111111111111111111111111111111111', 'latest'] }),
+    /must match trusted block/
+  )
+})
+
+test('createVerifiedTransport rejects invalid parameter counts on supported methods', async () => {
+  const transport = await createVerifiedTransport({
+    rpcUrl: PRIMARY,
+    trustedBlock
+  })
+
+  const client = createPublicClient({ transport })
+
+  await assert.rejects(
+    async () => await client.request({ method: 'eth_chainId' as any, params: [] as any }),
+    /not exposed via verified request path/
+  )
+
+  await assert.rejects(
+    async () => await client.request({ method: 'eth_call', params: [{ to: '0x1111111111111111111111111111111111111111', data: '0x' }, trustedBlock.number as `0x${string}`, {}] }),
+    /expects exactly 2 parameter/
+  )
+})
+
+test('createVerifiedTransport rejects non-zero-value eth_call requests', async () => {
+  const transport = await createVerifiedTransport({
+    rpcUrl: PRIMARY,
+    trustedBlock
+  })
+
+  const client = createPublicClient({ transport })
+
+  await assert.rejects(
+    async () => await client.request({ method: 'eth_call', params: [{ to: '0x1111111111111111111111111111111111111111', value: '0x1' }, trustedBlock.number as `0x${string}`] }),
+    /zero-value calls/
+  )
 })

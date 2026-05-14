@@ -9,6 +9,11 @@ export interface AccessListResult {
   accessList: AccessListEntry[]
 }
 
+// Zero tolerance: any block whose timestamp is in our future is rejected outright.
+// Block producers set timestamps ~1 s ahead, but the *safe* block tag is always
+// finality-confirmed and should never arrive with a future timestamp on a healthy node.
+const MAX_FUTURE_BLOCK_SKEW_MS = 0
+
 export function chunkArray<T> (values: T[], chunkSize: number): T[][] {
   if (chunkSize <= 0) {
     throw new Error(`Invalid chunk size: ${chunkSize}`)
@@ -50,12 +55,25 @@ export async function runWithConcurrency<T> (tasks: Array<() => Promise<T>>, con
   return results
 }
 
+export function ensureHexQuantity (value: unknown, field: string): `0x${string}` {
+  if (typeof value !== 'string' || !/^0x(?:0|[1-9a-f][0-9a-f]*)$/i.test(value)) {
+    throw new Error(`Invalid ${field} hex quantity for verified request`)
+  }
+
+  return value.toLowerCase() as `0x${string}`
+}
+
 export function assertBlockFreshness (block: TrustedBlock, maxBlockAgeMs: number, nowMs: number = Date.now()): void {
-  const blockTimestampMs = parseInt(block.timestamp, 16) * 1000
-  const ageMs = nowMs - blockTimestampMs
+  // Block timestamp is in seconds; all values fit safely in Number (< 2^53).
+  const blockMs = Number(block.timestamp) * 1000
+  const ageMs = nowMs - blockMs
 
   if (ageMs > maxBlockAgeMs) {
-    throw new Error(`Safe block ${block.number} timestamp is ${Math.round(ageMs / 1000)}s old (max ${maxBlockAgeMs / 1000}s)`)
+    throw new Error(`Safe block ${block.number} is ${Math.floor(ageMs / 1000)}s old (max ${maxBlockAgeMs / 1000}s)`)
+  }
+
+  if (ageMs < 0) {
+    throw new Error(`Safe block ${block.number} is dated ${Math.floor(-ageMs / 1000)}s in the future (max skew ${MAX_FUTURE_BLOCK_SKEW_MS / 1000}s)`)
   }
 }
 
@@ -95,50 +113,47 @@ export function isRetryableLocalExecutionError (err: unknown): boolean {
   // @ethereumjs/mpt throws 'Missing node in DB' when the EVM reads a storage slot
   // that was not included in the proof set. This is retryable — we re-fetch with
   // an expanded access list and try again.
-  return message.includes('missing')
+  return message.includes('missing node in db')
 }
 
-export function ensureHexAddress (value: unknown, field: string): string {
-  if (typeof value !== 'string' || !value.startsWith('0x') || value.length !== 42) {
+export function ensureHexAddress (value: unknown, field: string): `0x${string}` {
+  if (typeof value !== 'string' || !/^0x[0-9a-f]{40}$/i.test(value)) {
     throw new Error(`Invalid ${field} address for verified request`)
   }
 
-  return value.toLowerCase()
+  return value.toLowerCase() as `0x${string}`
 }
 
-export function ensureHexData (value: unknown, field: string): `0x${string}` {
+export function ensureHexData (value: unknown, field: string, expectedByteLength?: number): `0x${string}` {
   if (typeof value !== 'string' || !value.startsWith('0x')) {
     throw new Error(`Invalid ${field} hex data for verified request`)
   }
 
-  return value as `0x${string}`
+  const hex = value.slice(2)
+
+  if (hex.length % 2 !== 0 || !/^[0-9a-f]*$/i.test(hex)) {
+    throw new Error(`Invalid ${field} hex data for verified request`)
+  }
+
+  if (expectedByteLength != null && hex.length !== expectedByteLength * 2) {
+    throw new Error(`Invalid ${field} hex data for verified request`)
+  }
+
+  return value.toLowerCase() as `0x${string}`
 }
 
-export function pinRpcMethodToBlock (method: string, params: unknown[] | undefined, safeBlockNumber: string): unknown[] {
-  const p = params ?? []
-
-  switch (method) {
-    case 'eth_call': {
-      const tx = p[0]
-      const stateOverride = p[2]
-      if (stateOverride == null) {
-        return [tx, safeBlockNumber]
-      }
-      return [tx, safeBlockNumber, stateOverride]
-    }
-    case 'eth_getBlockByNumber':
-      return [safeBlockNumber, false]
-    case 'eth_getCode':
-    case 'eth_getBalance':
-    case 'eth_getTransactionCount':
-      return [p[0], safeBlockNumber]
-    case 'eth_getStorageAt':
-      return [p[0], p[1], safeBlockNumber]
-    case 'eth_getProof':
-      return [p[0], p[1] ?? [], safeBlockNumber]
-    case 'eth_createAccessList':
-      return [p[0], safeBlockNumber]
-    default:
-      return p
+/**
+ * Validates all fields of a {@link TrustedBlock}, throwing if any are malformed.
+ */
+export function validateTrustedBlock (block: TrustedBlock): TrustedBlock {
+  return {
+    number: ensureHexQuantity(block.number, 'number'),
+    hash: ensureHexData(block.hash, 'hash', 32),
+    timestamp: ensureHexQuantity(block.timestamp, 'timestamp'),
+    stateRoot: ensureHexData(block.stateRoot, 'stateRoot', 32),
+    baseFeePerGas: block.baseFeePerGas != null ? ensureHexQuantity(block.baseFeePerGas, 'baseFeePerGas') : undefined,
+    gasLimit: ensureHexQuantity(block.gasLimit, 'gasLimit'),
+    miner: ensureHexAddress(block.miner, 'miner'),
+    mixHash: ensureHexData(block.mixHash, 'mixHash', 32)
   }
 }

@@ -1,36 +1,24 @@
 import { executeVerifiedLocalCall, LocalCallExecutionError } from './verified-local-call.ts'
-import type { VerifiedStateBundle } from './verified-local-call.ts'
 import {
   type AccessListResult,
   chunkArray,
   ensureHexAddress,
   ensureHexData,
+  ensureHexQuantity,
   isRetryableLocalExecutionError,
   mergeAccessLists,
-  pinRpcMethodToBlock,
   runWithConcurrency
 } from './helpers.ts'
+import { ethCall, ethBatchCall } from './json-rpc.ts'
+import type { Trie } from '@ethereumjs/trie'
+import type { Proof } from '@ethereumjs/common'
 import type {
   TrustedBlock
 } from './types.ts'
 
-interface Eip1186StorageProof {
-  key: string
-  value: string
-  proof: string[]
-}
-
-interface Eip1186Proof {
-  address: string
-  balance: string
-  codeHash: string
-  nonce: string
-  accountProof: string[]
-  storageHash: string
-  storageProof: Eip1186StorageProof[]
-}
-
 interface VerifiedAccountState {
+  nonce: Uint8Array
+  balance: Uint8Array
   storageRoot: Uint8Array
   codeHash: Uint8Array
 }
@@ -46,49 +34,35 @@ interface SingleRpcVerifierOptions {
 interface SingleRpcVerifier {
   requestPinned<T>(method: string, params: unknown[], safeBlock: TrustedBlock, signal?: AbortSignal): Promise<T>
   prewarmVerificationDependencies(): Promise<void>
-  getProof(address: string, storageKeys: string[], blockNumber: string, signal?: AbortSignal): Promise<Eip1186Proof>
-  getAccessList(transaction: Record<string, string>, blockNumber: string, signal?: AbortSignal): Promise<AccessListResult>
-  assertAccessListSupport(transaction: Record<string, string>, blockNumber: string, signal?: AbortSignal): Promise<void>
-  verifyAccountProof(block: TrustedBlock, proof: Eip1186Proof): Promise<VerifiedAccountState>
-  verifyStorageProof(storageRoot: Uint8Array, slotKey: string, storageProof: Eip1186StorageProof): Promise<Uint8Array | null>
-  getVerifiedCode(address: string, blockNumber: string, expectedCodeHash: Uint8Array, signal?: AbortSignal): Promise<`0x${string}`>
-}
-
-interface JsonRpcResponse<T> {
-  result: T
-  error?: { code: number, message: string }
-}
-
-interface JsonRpcRequest {
-  id: number
-  jsonrpc: '2.0'
-  method: string
-  params: unknown[]
-}
-
-interface JsonRpcBatchResponse<T> {
-  id: number
-  result?: T
-  error?: { code: number, message: string }
 }
 
 interface JsonRpcTransactionCall {
   from?: string
   to?: string
   data?: string
+  value?: string
+  gas?: string
+  gasPrice?: string
+  maxFeePerGas?: string
+  maxPriorityFeePerGas?: string
 }
 
-interface TrieInstance {
-  get: (key: Uint8Array, throwIfMissing?: boolean) => Promise<Uint8Array | null>
-}
-
-interface TrieClass {
-  verifyProof: (key: Uint8Array, proof: Uint8Array[], opts?: Record<string, any>) => Promise<Uint8Array | null>
-  createFromProof: (proof: Uint8Array[], opts?: Record<string, any>) => Promise<TrieInstance>
+export interface VerifiedStateBundle {
+  /**
+   * EIP-1186 account proofs as returned by `eth_getProof`, with the following fields
+   * cryptographically verified against the trusted state root before inclusion:
+   * `address`, `accountProof`, `storageHash`, `codeHash`, `nonce`, `balance`.
+   *
+   * `storageProof[i].value` is NOT explicitly verified here and must not be read as a
+   * trusted storage value. The EVM derives storage values from the proof trie nodes
+   * (via `fromMerkleStateProof` with `safe=true`), never from this convenience field.
+   */
+  proofs: Proof[]
+  codeByAddress: Record<string, `0x${string}`>
 }
 
 interface ProofTools {
-  Trie: TrieClass
+  Trie: typeof Trie
   rlpDecode: (input: Uint8Array) => any
 }
 
@@ -102,7 +76,16 @@ const MAX_VERIFIED_CALL_RETRIES = 3
 const MAX_BATCH_SIZE = 8
 const MAX_PARALLEL_ACCOUNT_BATCHES = 4
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
-const MAINNET_CHAIN_ID_HEX = '0x1'
+
+// Default transaction gas limit used for local EVM execution when the caller does not
+// supply one. This bounds execution steps for read-only calls; it is distinct from the
+// verified block header gasLimit used by the GASLIMIT opcode.
+const DEFAULT_CALL_GAS_LIMIT = '0x1c9c380' // 30,000,000
+
+// Minimum EIP-1559 priority fee used when constructing the eth_createAccessList request.
+// Some RPC nodes reject zero-fee transactions at the API layer even for access list probing.
+// This floor exists purely to satisfy RPC validation — it has no effect on actual execution.
+const MIN_PRIORITY_FEE_PER_GAS = 1_000_000_000n // 1 Gwei
 
 let proofToolsCache: ProofTools | null = null
 let hexToolsCache: HexTools | null = null
@@ -148,97 +131,16 @@ async function loadHexTools (): Promise<HexTools> {
   return tools
 }
 
-async function ethCall<T> (url: string, method: string, params: unknown[], signal?: AbortSignal): Promise<T> {
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-    signal
-  })
-
-  if (!response.ok) {
-    throw new Error(`RPC ${url} returned HTTP ${response.status} for ${method}`)
-  }
-
-  const body: JsonRpcResponse<T> = await response.json()
-
-  if (body.error != null) {
-    throw new Error(`RPC ${url} error for ${method}: ${body.error.message}`)
-  }
-
-  return body.result
-}
-
-async function ethBatchCall<T> (url: string, calls: Array<{ method: string, params: unknown[] }>, signal?: AbortSignal): Promise<T[]> {
-  if (calls.length === 0) {
-    return []
-  }
-
-  const requests: JsonRpcRequest[] = calls.map((call, index) => ({
-    id: index + 1,
-    jsonrpc: '2.0',
-    method: call.method,
-    params: call.params
-  }))
-
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(requests),
-    signal
-  })
-
-  if (!response.ok) {
-    throw new Error(`RPC ${url} returned HTTP ${response.status} for batch call (${calls.length} requests)`)
-  }
-
-  const body = await response.json() as JsonRpcBatchResponse<T>[]
-
-  if (!Array.isArray(body)) {
-    throw new Error(`RPC ${url} returned non-batch payload for batch call (${calls.length} requests)`)
-  }
-
-  const byId = new Map<number, JsonRpcBatchResponse<T>>()
-
-  for (const item of body) {
-    byId.set(item.id, item)
-  }
-
-  return requests.map(request => {
-    const item = byId.get(request.id)
-
-    if (item == null) {
-      throw new Error(`RPC ${url} batch response missing id=${request.id} for ${request.method}`)
-    }
-
-    if (item.error != null) {
-      throw new Error(`RPC ${url} error for ${request.method} in batch: ${item.error.message}`)
-    }
-
-    return item.result as T
-  })
-}
-
-async function getChainId (rpcUrl: string, signal?: AbortSignal): Promise<string> {
-  return ethCall<string>(rpcUrl, 'eth_chainId', [], signal)
-}
-
-async function assertMainnet (rpcUrl: string, signal?: AbortSignal): Promise<void> {
-  const chainId = await getChainId(rpcUrl, signal)
-
-  if (chainId.toLowerCase() !== MAINNET_CHAIN_ID_HEX) {
-    throw new Error(`RPC ${rpcUrl} is not mainnet (chainId=${chainId})`)
+function assertParamCount (method: string, params: unknown[], expected: number): void {
+  if (params.length !== expected) {
+    throw new Error(`${method} expects exactly ${expected} parameter(s), got ${params.length}`)
   }
 }
 
-async function getBlockByNumber (rpcUrl: string, blockNumber: string, signal?: AbortSignal): Promise<TrustedBlock> {
-  const block = await ethCall<TrustedBlock | null>(rpcUrl, 'eth_getBlockByNumber', [blockNumber, false], signal)
-
-  if (block == null) {
-    throw new Error(`RPC ${rpcUrl} returned null block for ${blockNumber}`)
+function assertSafeBlockNumberParam (method: string, blockParam: unknown, safeBlockNumber: string): void {
+  if (typeof blockParam !== 'string' || blockParam.toLowerCase() !== safeBlockNumber.toLowerCase()) {
+    throw new Error(`${method} block parameter must match trusted block ${safeBlockNumber}`)
   }
-
-  return block
 }
 
 function decodeAccountState (accountRlpValue: Uint8Array, proofTools: ProofTools): VerifiedAccountState {
@@ -248,14 +150,23 @@ function decodeAccountState (accountRlpValue: Uint8Array, proofTools: ProofTools
     throw new Error('Failed to decode account value from account proof')
   }
 
+  const nonce = decoded[0]
+  const balance = decoded[1]
   const storageRoot = decoded[2]
   const codeHash = decoded[3]
 
-  if (!(storageRoot instanceof Uint8Array) || !(codeHash instanceof Uint8Array)) {
-    throw new Error('Decoded account proof did not contain byte-array storageRoot/codeHash')
+  if (
+    !(nonce instanceof Uint8Array) ||
+    !(balance instanceof Uint8Array) ||
+    !(storageRoot instanceof Uint8Array) ||
+    !(codeHash instanceof Uint8Array)
+  ) {
+    throw new Error('Decoded account proof did not contain expected byte-array fields')
   }
 
   return {
+    nonce,
+    balance,
     storageRoot,
     codeHash
   }
@@ -277,15 +188,16 @@ class SingleRpcEthVerifier implements SingleRpcVerifier {
     ])
   }
 
-  private async getProofsBatch (addressesAndSlots: Array<{ address: string, storageKeys: string[] }>, blockNumber: string, signal?: AbortSignal): Promise<Eip1186Proof[]> {
+  private async getProofsBatch (addressesAndSlots: Array<{ address: string, storageKeys: string[] }>, blockNumber: string, signal?: AbortSignal): Promise<Proof[]> {
     const calls = addressesAndSlots.map(({ address, storageKeys }) => ({
       method: 'eth_getProof',
       params: [address, storageKeys, blockNumber] as unknown[]
     }))
 
     try {
-      return await ethBatchCall<Eip1186Proof>(this.config.rpcUrl, calls, signal)
-    } catch {
+      return await ethBatchCall<Proof>(this.config.rpcUrl, calls, signal)
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') throw err
       return Promise.all(addressesAndSlots.map(async ({ address, storageKeys }) =>
         this.getProof(address, storageKeys, blockNumber, signal)
       ))
@@ -300,7 +212,8 @@ class SingleRpcEthVerifier implements SingleRpcVerifier {
 
     try {
       return await ethBatchCall<`0x${string}`>(this.config.rpcUrl, calls, signal)
-    } catch {
+    } catch (err) {
+      if (err instanceof Error && err.name === 'AbortError') throw err
       return Promise.all(addresses.map(async address =>
         ethCall<`0x${string}`>(this.config.rpcUrl, 'eth_getCode', [address, blockNumber], signal)
       ))
@@ -320,32 +233,22 @@ class SingleRpcEthVerifier implements SingleRpcVerifier {
   }
 
   async requestPinned<T> (method: string, params: unknown[], safeBlock: TrustedBlock, signal?: AbortSignal): Promise<T> {
-    const pinnedParams = pinRpcMethodToBlock(method, params, safeBlock.number)
-
     switch (method) {
-      case 'eth_chainId':
-        await assertMainnet(this.config.rpcUrl, signal)
-        return MAINNET_CHAIN_ID_HEX as T
-      case 'eth_getBlockByNumber':
-        return safeBlock as T
       case 'eth_getCode': {
-        const address = ensureHexAddress(pinnedParams[0], 'eth_getCode')
+        assertParamCount(method, params, 2)
+        assertSafeBlockNumberParam(method, params[1], safeBlock.number)
+        const address = ensureHexAddress(params[0], 'eth_getCode')
         return this.getVerifiedCodeWithoutExpectedHash(address, safeBlock, signal) as T
       }
-      case 'eth_getProof': {
-        const address = ensureHexAddress(pinnedParams[0], 'eth_getProof')
-        const storageKeys = Array.isArray(pinnedParams[1]) ? pinnedParams[1] : []
-        return this.getProofWithVerification(address, storageKeys as string[], safeBlock, signal) as T
-      }
       case 'eth_call': {
-        const tx = (pinnedParams[0] ?? {}) as JsonRpcTransactionCall
-
-        if (pinnedParams[2] != null) {
-          throw new Error('eth_call state override is not supported for verified execution')
-        }
+        assertParamCount(method, params, 2)
+        assertSafeBlockNumberParam(method, params[1], safeBlock.number)
+        const tx = (params[0] ?? {}) as JsonRpcTransactionCall
 
         return this.executeVerifiedEthCall(tx, safeBlock, signal) as T
       }
+      case 'eth_chainId':
+      case 'eth_getBlockByNumber':
       case 'eth_getBalance':
       case 'eth_getTransactionCount':
       case 'eth_getStorageAt':
@@ -356,29 +259,17 @@ class SingleRpcEthVerifier implements SingleRpcVerifier {
     }
   }
 
-  private async getProofWithVerification (address: string, storageKeys: string[], safeBlock: TrustedBlock, signal?: AbortSignal): Promise<Eip1186Proof> {
-    const proof = await this.getProof(address, storageKeys, safeBlock.number, signal)
-    const account = await this.verifyAccountProof(safeBlock, proof)
-
-    for (const slotProof of proof.storageProof) {
-      await this.verifyStorageProof(account.storageRoot, slotProof.key, slotProof)
-    }
-
-    return proof
-  }
-
   private async getVerifiedCodeWithoutExpectedHash (address: string, safeBlock: TrustedBlock, signal?: AbortSignal): Promise<`0x${string}`> {
     const proof = await this.getProof(address, [], safeBlock.number, signal)
-    const account = await this.verifyAccountProof(safeBlock, proof)
+    const account = await this.verifyAccountProof(safeBlock, proof, address)
+    if (account == null) {
+      return '0x'
+    }
     return this.getVerifiedCode(address, safeBlock.number, account.codeHash, signal)
   }
 
-  private async buildVerifiedStateBundle (safeBlock: TrustedBlock, to: string, callData: `0x${string}`, mergedAccessList: AccessListResult | null, signal?: AbortSignal): Promise<{ state: VerifiedStateBundle, accessList: AccessListResult }> {
-    const freshAccessList = await this.getAccessList({
-      from: ZERO_ADDRESS,
-      to,
-      data: callData
-    }, safeBlock.number, signal, safeBlock)
+  private async buildVerifiedStateBundle (safeBlock: TrustedBlock, to: string, accessListTx: Record<string, string>, mergedAccessList: AccessListResult | null, signal?: AbortSignal): Promise<{ state: VerifiedStateBundle, accessList: AccessListResult }> {
+    const freshAccessList = await this.getAccessList(accessListTx, safeBlock, signal)
 
     const combined = mergeAccessLists(mergedAccessList, freshAccessList)
     const byAddress = new Map<string, string[]>()
@@ -391,22 +282,38 @@ class SingleRpcEthVerifier implements SingleRpcVerifier {
       byAddress.set(to.toLowerCase(), [])
     }
 
-    const proofs: Eip1186Proof[] = []
+    const proofs: Proof[] = []
     const codeByAddress: Record<string, `0x${string}`> = {}
     const addressesAndSlots = [...byAddress.entries()].map(([address, slots]) => ({ address, storageKeys: slots }))
     const proofChunks = chunkArray(addressesAndSlots, MAX_BATCH_SIZE)
     const chunkTasks = proofChunks.map(chunk => async (): Promise<void> => {
       const chunkProofs = await this.getProofsBatch(chunk, safeBlock.number, signal)
-      const chunkAccounts = await Promise.all(chunkProofs.map(async proof => this.verifyAccountProof(safeBlock, proof)))
       const chunkAddresses = chunk.map(item => item.address)
-      const chunkCodes = await this.getCodesBatch(chunkAddresses, safeBlock.number, signal)
+      const chunkAccounts = await Promise.all(chunkProofs.map(async (proof, i) => this.verifyAccountProof(safeBlock, proof, chunkAddresses[i])))
 
-      await Promise.all(chunkCodes.map(async (code, index) => this.assertExpectedCodeHash(chunkAddresses[index], code, chunkAccounts[index].codeHash)))
+      // verifyAccountProof already validated address/codeHash/storageHash against the trie.
+      // Separate existing accounts from non-existent ones for code fetching.
+      const addressesNeedingCode: string[] = []
+      const accountsNeedingCode: VerifiedAccountState[] = []
+
+      for (let i = 0; i < chunk.length; i++) {
+        const account = chunkAccounts[i]
+        if (account != null) {
+          addressesNeedingCode.push(chunkAddresses[i])
+          accountsNeedingCode.push(account)
+        }
+      }
+
+      const chunkCodes = await this.getCodesBatch(addressesNeedingCode, safeBlock.number, signal)
+      await Promise.all(chunkCodes.map(async (code, index) => this.assertExpectedCodeHash(addressesNeedingCode[index], code, accountsNeedingCode[index].codeHash)))
 
       for (let i = 0; i < chunk.length; i++) {
         const address = chunkAddresses[i]
-        proofs.push({ ...chunkProofs[i], address })
-        codeByAddress[address] = chunkCodes[i]
+        proofs.push({ ...chunkProofs[i], address: address as `0x${string}` })
+        const codeIdx = addressesNeedingCode.indexOf(address)
+        if (codeIdx !== -1) {
+          codeByAddress[address] = chunkCodes[codeIdx]
+        }
       }
     })
 
@@ -419,31 +326,59 @@ class SingleRpcEthVerifier implements SingleRpcVerifier {
   }
 
   private async executeVerifiedEthCall (tx: JsonRpcTransactionCall, safeBlock: TrustedBlock, signal?: AbortSignal): Promise<`0x${string}`> {
+    const from = tx.from == null ? ZERO_ADDRESS : ensureHexAddress(tx.from, 'eth_call.from')
     const to = ensureHexAddress(tx.to, 'eth_call.to')
     const callData = ensureHexData(tx.data ?? '0x', 'eth_call.data')
+    const valueHex = ensureHexQuantity(tx.value ?? '0x0', 'eth_call.value')
+    const value = BigInt(valueHex)
+
+    if (value !== 0n) {
+      throw new Error('Verified eth_call only supports zero-value calls')
+    }
+
+    const callGasLimitHex = ensureHexQuantity(tx.gas ?? DEFAULT_CALL_GAS_LIMIT, 'eth_call.gas')
+
+    const accessListTx: Record<string, string> = {
+      from,
+      to,
+      data: callData,
+      value: valueHex,
+      gas: callGasLimitHex
+    }
+
+    if (tx.gasPrice != null) {
+      accessListTx.gasPrice = ensureHexQuantity(tx.gasPrice, 'eth_call.gasPrice')
+    }
+
+    if (tx.maxFeePerGas != null) {
+      accessListTx.maxFeePerGas = ensureHexQuantity(tx.maxFeePerGas, 'eth_call.maxFeePerGas')
+    }
+
+    if (tx.maxPriorityFeePerGas != null) {
+      accessListTx.maxPriorityFeePerGas = ensureHexQuantity(tx.maxPriorityFeePerGas, 'eth_call.maxPriorityFeePerGas')
+    }
 
     let accessList: AccessListResult | null = null
     let lastError: unknown
 
     for (let attempt = 0; attempt < MAX_VERIFIED_CALL_RETRIES; attempt++) {
-      const bundle = await this.buildVerifiedStateBundle(safeBlock, to, callData, accessList, signal)
+      const bundle = await this.buildVerifiedStateBundle(safeBlock, to, accessListTx, accessList, signal)
       accessList = bundle.accessList
 
       try {
         return await executeVerifiedLocalCall({
+          from,
           to,
           state: bundle.state,
-          data: callData
+          data: callData,
+          value,
+          callGasLimit: BigInt(callGasLimitHex),
+          block: safeBlock
         })
       } catch (err) {
         lastError = err
 
         if (err instanceof LocalCallExecutionError) {
-          if (err.reason === 'out-of-gas' && attempt < MAX_VERIFIED_CALL_RETRIES - 1) {
-            this.log?.('retrying verified eth_call for %s after attempt %d due to local execution %s', to, attempt + 1, err.reason)
-            continue
-          }
-
           throw err
         }
 
@@ -458,20 +393,19 @@ class SingleRpcEthVerifier implements SingleRpcVerifier {
     throw lastError instanceof Error ? lastError : new Error(String(lastError))
   }
 
-  async getProof (address: string, storageKeys: string[], blockNumber: string, signal?: AbortSignal): Promise<Eip1186Proof> {
-    return ethCall<Eip1186Proof>(this.config.rpcUrl, 'eth_getProof', [address, storageKeys, blockNumber], signal)
+  private async getProof (address: string, storageKeys: string[], blockNumber: string, signal?: AbortSignal): Promise<Proof> {
+    return ethCall<Proof>(this.config.rpcUrl, 'eth_getProof', [address, storageKeys, blockNumber], signal)
   }
 
-  async getAccessList (transaction: Record<string, string>, blockNumber: string, signal?: AbortSignal, knownBlock?: TrustedBlock): Promise<AccessListResult> {
-    const block = knownBlock ?? await getBlockByNumber(this.config.rpcUrl, blockNumber, signal)
-    const baseFeePerGas = BigInt(block.baseFeePerGas ?? '0x0')
-    const minPriorityFeePerGas = 1_000_000_000n
+  private async getAccessList (transaction: Record<string, string>, safeBlock: TrustedBlock, signal?: AbortSignal): Promise<AccessListResult> {
+    const baseFeePerGas = BigInt(safeBlock.baseFeePerGas ?? '0x0')
+    const minPriorityFeePerGas = MIN_PRIORITY_FEE_PER_GAS
     const minFeePerGas = baseFeePerGas + minPriorityFeePerGas
 
     const txForAccessList: Record<string, string> = {
       ...transaction,
       value: transaction.value ?? '0x0',
-      gas: transaction.gas ?? '0xf4240'
+      gas: transaction.gas ?? DEFAULT_CALL_GAS_LIMIT
     }
 
     const hasEip1559Fees = transaction.maxFeePerGas != null || transaction.maxPriorityFeePerGas != null
@@ -497,62 +431,82 @@ class SingleRpcEthVerifier implements SingleRpcVerifier {
     return ethCall<AccessListResult>(
       this.config.rpcUrl,
       'eth_createAccessList',
-      [txForAccessList, blockNumber],
+      [txForAccessList, safeBlock.number],
       signal
     )
   }
 
-  async assertAccessListSupport (transaction: Record<string, string>, blockNumber: string, signal?: AbortSignal): Promise<void> {
-    await this.getAccessList(transaction, blockNumber, signal)
-  }
-
-  async verifyAccountProof (block: TrustedBlock, proof: Eip1186Proof): Promise<VerifiedAccountState> {
+  private async verifyAccountProof (block: TrustedBlock, proof: Proof, expectedAddress: string): Promise<VerifiedAccountState | null> {
     const proofTools = await loadProofTools()
     const hexTools = await loadHexTools()
 
-    this.log?.('verifying account proof for %s at block %s stateRoot=%s', proof.address, block.number, block.stateRoot)
+    this.log?.('verifying account proof for %s at block %s stateRoot=%s', expectedAddress, block.number, block.stateRoot)
+
+    // Defensively reject a proof whose stated address differs from what we requested.
+    // This surfaces substitution attacks rather than silently ignoring the mismatch.
+    if (proof.address.toLowerCase() !== expectedAddress.toLowerCase()) {
+      throw new Error(`Proof address mismatch for block ${block.number}: requested ${expectedAddress}, RPC returned proof for ${proof.address}`)
+    }
 
     const accountProofNodes = proof.accountProof.map(node => hexTools.hexToBytes(node as `0x${string}`))
-    const addressBytes = hexTools.hexToBytes(proof.address as `0x${string}`)
+    // Use expectedAddress (the address we requested) as the trie key, not proof.address.
+    // Even after the equality check above, keying on the canonical local value avoids any
+    // case-normalisation difference in what the RPC returned.
+    const addressBytes = hexTools.hexToBytes(expectedAddress as `0x${string}`)
     const stateRootBytes = hexTools.hexToBytes(block.stateRoot as `0x${string}`)
 
-    let proofTrie: TrieInstance
+    let proofTrie: Trie
     try {
       proofTrie = await proofTools.Trie.createFromProof(accountProofNodes, { root: stateRootBytes, useKeyHashing: true })
     } catch (err) {
-      throw new Error(`Account proof createFromProof failed for ${proof.address} at block ${block.number}: ${err instanceof Error ? err.message : String(err)}`)
+      throw new Error(`Account proof createFromProof failed for ${expectedAddress} at block ${block.number}: ${err instanceof Error ? err.message : String(err)}`)
     }
 
     let accountValue: Uint8Array | null
     try {
       accountValue = await proofTrie.get(addressBytes, false)
     } catch (err) {
-      throw new Error(`Account proof trie.get failed for ${proof.address} at block ${block.number}: ${err instanceof Error ? err.message : String(err)}`)
+      throw new Error(`Account proof trie.get failed for ${expectedAddress} at block ${block.number}: ${err instanceof Error ? err.message : String(err)}`)
     }
 
     if (accountValue == null) {
-      throw new Error(`Account proof verified as non-existent for ${proof.address} at block ${block.number}`)
+      // Non-existent account: proof of non-membership verified. Return null so callers
+      // can handle this as an empty account (balance=0, nonce=0, empty code, empty storage).
+      return null
     }
 
-    return decodeAccountState(accountValue, proofTools)
+    const state = decodeAccountState(accountValue, proofTools)
+
+    // Cross-check proof fields against what the trie actually committed to. This turns
+    // a silently-ignored field into a hard assertion, catching both dishonest RPCs and
+    // corrupted responses before any of those values can influence further computation.
+    const verifiedStorageHash = hexTools.bytesToHex(state.storageRoot)
+    if (verifiedStorageHash.toLowerCase() !== proof.storageHash.toLowerCase()) {
+      throw new Error(`Storage hash mismatch for ${expectedAddress} at block ${block.number}: state trie commits to ${verifiedStorageHash}, proof claims ${proof.storageHash}`)
+    }
+
+    const verifiedCodeHash = hexTools.bytesToHex(state.codeHash)
+    if (verifiedCodeHash.toLowerCase() !== proof.codeHash.toLowerCase()) {
+      throw new Error(`Code hash mismatch for ${expectedAddress} at block ${block.number}: state trie commits to ${verifiedCodeHash}, proof claims ${proof.codeHash}`)
+    }
+
+    // RLP encodes integers as minimal big-endian bytes; an empty byte array means 0.
+    const trieNonce = state.nonce.length === 0 ? 0n : BigInt(hexTools.bytesToHex(state.nonce))
+    const proofNonce = proof.nonce === '0x' ? 0n : BigInt(proof.nonce)
+    if (trieNonce !== proofNonce) {
+      throw new Error(`Nonce mismatch for ${expectedAddress} at block ${block.number}: state trie commits to ${trieNonce}, proof claims ${proof.nonce}`)
+    }
+
+    const trieBalance = state.balance.length === 0 ? 0n : BigInt(hexTools.bytesToHex(state.balance))
+    const proofBalance = proof.balance === '0x' ? 0n : BigInt(proof.balance)
+    if (trieBalance !== proofBalance) {
+      throw new Error(`Balance mismatch for ${expectedAddress} at block ${block.number}: state trie commits to ${trieBalance}, proof claims ${proof.balance}`)
+    }
+
+    return state
   }
 
-  async verifyStorageProof (storageRoot: Uint8Array, slotKey: string, storageProof: Eip1186StorageProof): Promise<Uint8Array | null> {
-    const proofTools = await loadProofTools()
-    const hexTools = await loadHexTools()
-    const storageProofNodes = storageProof.proof.map(node => hexTools.hexToBytes(node as `0x${string}`))
-
-    return proofTools.Trie.verifyProof(
-      hexTools.hexToBytes(slotKey as `0x${string}`),
-      storageProofNodes,
-      {
-        root: storageRoot,
-        useKeyHashing: true
-      }
-    )
-  }
-
-  async getVerifiedCode (address: string, blockNumber: string, expectedCodeHash: Uint8Array, signal?: AbortSignal): Promise<`0x${string}`> {
+  private async getVerifiedCode (address: string, blockNumber: string, expectedCodeHash: Uint8Array, signal?: AbortSignal): Promise<`0x${string}`> {
     const hexTools = await loadHexTools()
     const code = await ethCall<`0x${string}`>(this.config.rpcUrl, 'eth_getCode', [address, blockNumber], signal)
     const actualCodeHash = hexTools.keccak256(code)
@@ -566,6 +520,6 @@ class SingleRpcEthVerifier implements SingleRpcVerifier {
   }
 }
 
-export async function createSingleRpcVerifier (config: SingleRpcVerifierConfig, options: SingleRpcVerifierOptions = {}): Promise<SingleRpcVerifier> {
+export function createSingleRpcVerifier (config: SingleRpcVerifierConfig, options: SingleRpcVerifierOptions = {}): SingleRpcVerifier {
   return new SingleRpcEthVerifier(config, options)
 }

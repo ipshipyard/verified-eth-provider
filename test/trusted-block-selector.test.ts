@@ -53,18 +53,18 @@ const nowSeconds = Math.floor(Date.now() / 1000)
 
 const block = {
   number: '0x100',
-  hash: '0xabc123',
+  hash: `0x${'ab'.repeat(32)}`,
   timestamp: `0x${nowSeconds.toString(16)}`,
-  stateRoot: '0xdef456',
-  baseFeePerGas: '0x1'
+  stateRoot: `0x${'cd'.repeat(32)}`,
+  baseFeePerGas: '0x1',
+  gasLimit: '0x1c9c380',
+  miner: '0x0000000000000000000000000000000000000000',
+  mixHash: '0x0000000000000000000000000000000000000000000000000000000000000000'
 }
 
 test('createQuorumTrustedBlockSelector returns safe block when all RPCs agree', async () => {
   await withMockFetch([
-    { url: PRIMARY, method: 'eth_chainId', result: '0x1' },
-    { url: WITNESS_A, method: 'eth_chainId', result: '0x1' },
-    { url: WITNESS_B, method: 'eth_chainId', result: '0x1' },
-    { url: PRIMARY, method: 'eth_getBlockByNumber', result: block },
+    { url: PRIMARY, method: 'eth_getBlockByNumber', result: { ...block, nonce: '0x0', extraData: '0x1234' } },
     { url: WITNESS_A, method: 'eth_getBlockByNumber', result: block },
     { url: WITNESS_B, method: 'eth_getBlockByNumber', result: block }
   ], async () => {
@@ -77,16 +77,16 @@ test('createQuorumTrustedBlockSelector returns safe block when all RPCs agree', 
     const trusted = await selector()
     assert.equal(trusted.hash, block.hash)
     assert.equal(trusted.number, block.number)
+    const trustedData = trusted as unknown as Record<string, unknown>
+    assert.equal('nonce' in trustedData, false)
+    assert.equal('extraData' in trustedData, false)
   })
 })
 
-test('createQuorumTrustedBlockSelector rejects when witness hash mismatches', async () => {
+test('createQuorumTrustedBlockSelector rejects when witness trusted block fields mismatch', async () => {
   await withMockFetch([
-    { url: PRIMARY, method: 'eth_chainId', result: '0x1' },
-    { url: WITNESS_A, method: 'eth_chainId', result: '0x1' },
-    { url: WITNESS_B, method: 'eth_chainId', result: '0x1' },
     { url: PRIMARY, method: 'eth_getBlockByNumber', result: block },
-    { url: WITNESS_A, method: 'eth_getBlockByNumber', result: { ...block, hash: '0xbeef' } },
+    { url: WITNESS_A, method: 'eth_getBlockByNumber', result: { ...block, timestamp: '0x1' } },
     { url: WITNESS_B, method: 'eth_getBlockByNumber', result: block }
   ], async () => {
     const selector = await createQuorumTrustedBlockSelector({
@@ -97,26 +97,7 @@ test('createQuorumTrustedBlockSelector rejects when witness hash mismatches', as
 
     await assert.rejects(
       async () => selector(),
-      /Witness A/
-    )
-  })
-})
-
-test('createQuorumTrustedBlockSelector rejects non-mainnet RPC', async () => {
-  await withMockFetch([
-    { url: PRIMARY, method: 'eth_chainId', result: '0xaa36a7' },
-    { url: WITNESS_A, method: 'eth_chainId', result: '0x1' },
-    { url: WITNESS_B, method: 'eth_chainId', result: '0x1' }
-  ], async () => {
-    const selector = await createQuorumTrustedBlockSelector({
-      primaryRpc: PRIMARY,
-      witnessRpcs: [WITNESS_A, WITNESS_B],
-      maxSafeBlockAgeMs: 1_000_000
-    })
-
-    await assert.rejects(
-      async () => selector(),
-      /not mainnet/
+      /timestamp .* does not match primary/
     )
   })
 })

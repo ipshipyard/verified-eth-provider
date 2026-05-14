@@ -1,33 +1,18 @@
-import { Common, Hardfork, Mainnet } from '@ethereumjs/common'
+import { Common, Mainnet } from '@ethereumjs/common'
 import { createEVM } from '@ethereumjs/evm'
 import { fromMerkleStateProof } from '@ethereumjs/statemanager'
-import { bytesToHex, createAddressFromString, createZeroAddress, hexToBytes } from '@ethereumjs/util'
-
-interface Eip1186StorageProof {
-  key: string
-  value: string
-  proof: string[]
-}
-
-interface Eip1186Proof {
-  address: string
-  balance: string
-  codeHash: string
-  nonce: string
-  accountProof: string[]
-  storageHash: string
-  storageProof: Eip1186StorageProof[]
-}
-
-export interface VerifiedStateBundle {
-  proofs: Eip1186Proof[]
-  codeByAddress: Record<string, `0x${string}`>
-}
+import { bytesToHex, createAddressFromString, hexToBytes } from '@ethereumjs/util'
+import type { VerifiedStateBundle } from './provider.ts'
+import type { TrustedBlock } from './types.ts'
 
 interface VerifiedLocalCallArgs {
+  from: string
   to: string
   state: VerifiedStateBundle
   data: `0x${string}`
+  value: bigint
+  callGasLimit: bigint
+  block: TrustedBlock
 }
 
 export class LocalCallExecutionError extends Error {
@@ -44,13 +29,21 @@ export class LocalCallExecutionError extends Error {
   }
 }
 
-const common = new Common({
-  chain: Mainnet,
-  hardfork: Hardfork.Cancun
-})
-
 export async function executeVerifiedLocalCall (args: VerifiedLocalCallArgs): Promise<`0x${string}`> {
-  const stateManager = await fromMerkleStateProof(args.state.proofs as any, true, {
+  const blockTimestamp = BigInt(args.block.timestamp)
+
+  const common = new Common({ chain: Mainnet })
+  // Post-merge hardfork selection is timestamp-based. Using blockNumber alone incorrectly
+  // selects paris for all post-merge blocks. Both must be provided.
+  common.setHardforkBy({ blockNumber: BigInt(args.block.number), timestamp: blockTimestamp })
+
+  if (!common.gteHardfork('paris')) {
+    throw new Error(
+      `Block ${args.block.number} predates The Merge (Paris hardfork). Pre-merge blocks are not supported.`
+    )
+  }
+
+  const stateManager = await fromMerkleStateProof(args.state.proofs, true, {
     common
   })
 
@@ -58,6 +51,7 @@ export async function executeVerifiedLocalCall (args: VerifiedLocalCallArgs): Pr
     await stateManager.putCode(createAddressFromString(address), hexToBytes(code))
   }
 
+  const from = createAddressFromString(args.from)
   const to = createAddressFromString(args.to)
 
   const evm = await createEVM({
@@ -66,12 +60,39 @@ export async function executeVerifiedLocalCall (args: VerifiedLocalCallArgs): Pr
   })
 
   const result = await evm.runCall({
-    caller: createZeroAddress(),
-    origin: createZeroAddress(),
+    block: {
+      header: {
+        // Verified fields from the quorum-agreed TrustedBlock:
+        number: BigInt(args.block.number),
+        timestamp: blockTimestamp,
+        // undefined → EVM throws 'Block has no Base Fee' (correct: surfaces as error,
+        // not a silent wrong value). In practice always present for post-London blocks.
+        baseFeePerGas: args.block.baseFeePerGas != null ? BigInt(args.block.baseFeePerGas) : undefined,
+
+        // Correct by definition post-merge (EIP-3675): difficulty is always 0.
+        difficulty: 0n,
+
+        // Verified fields from TrustedBlock: block proposer and beacon chain RANDAO mix.
+        coinbase: createAddressFromString(args.block.miner),
+        prevRandao: hexToBytes(args.block.mixHash as `0x${string}`),
+
+        // Verified field from TrustedBlock.
+        gasLimit: BigInt(args.block.gasLimit),
+
+        // Blob base fee is not yet part of TrustedBlock. Returning undefined causes the EVM to throw
+        // 'Block has no Blob Base Fee' if a contract executes BLOBBASEFEE. This is
+        // preferable to silently returning 0.
+        getBlobGasPrice: () => undefined
+      }
+    },
+    caller: from,
+    origin: from,
     to,
     data: hexToBytes(args.data),
-    gasLimit: 30_000_000n,
-    value: 0n,
+    gasLimit: args.callGasLimit,
+    value: args.value,
+    // Read-only zero-value call: skip the caller's balance check. The verified request path
+    // rejects non-zero value before execution.
     skipBalance: true
   })
 

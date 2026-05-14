@@ -23,6 +23,7 @@
     "viem": "^2.48.4"
   },
   "devDependencies": {
+    "@types/node": "^22.15.29",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3"
   }

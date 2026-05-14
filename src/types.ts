@@ -23,6 +23,12 @@ export interface TrustedBlock {
   timestamp: string
   stateRoot: string
   baseFeePerGas?: string
+  /** Block gas limit (EVM: GASLIMIT opcode). Equal to `block.gasLimit` in JSON-RPC. */
+  gasLimit: string
+  /** Block proposer address (EVM: COINBASE opcode). Equal to `block.miner` in JSON-RPC. */
+  miner: string
+  /** Beacon chain RANDAO mix at this block (EVM: PREVRANDAO opcode). Equal to `block.mixHash` in JSON-RPC. */
+  mixHash: string
 }
 
 export type TrustedBlockProvider = (signal?: AbortSignal) => Promise<TrustedBlock>

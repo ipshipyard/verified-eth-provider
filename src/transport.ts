@@ -1,5 +1,6 @@
 import { custom } from 'viem'
 import { createSingleRpcVerifier } from './provider.ts'
+import { validateTrustedBlock } from './helpers.ts'
 import type {
   TrustedBlock,
   VerifiedTransport,
@@ -11,10 +12,12 @@ export async function createVerifiedTransport (
   config: VerifiedTransportConfig,
   options: VerifiedTransportOptions = {}
 ): Promise<VerifiedTransport> {
-  const verifier = await createSingleRpcVerifier({ rpcUrl: config.rpcUrl }, options)
-  const trustedBlock = typeof config.trustedBlock === 'function'
-    ? await config.trustedBlock()
-    : config.trustedBlock
+  const verifier = createSingleRpcVerifier({ rpcUrl: config.rpcUrl }, options)
+  const trustedBlock = validateTrustedBlock(
+    typeof config.trustedBlock === 'function'
+      ? await config.trustedBlock()
+      : config.trustedBlock
+  )
 
   const transport = custom({
     request: async ({ method, params }: { method: string, params?: unknown[] }) => {
