@@ -85,7 +85,7 @@ test('createVerifiedTransport accepts async trusted block provider', async () =>
   assert.equal(transport.trustedBlock.hash, trustedBlock.hash)
 })
 
-test('createVerifiedTransport rejects mismatched block parameters on supported methods', async () => {
+test('createVerifiedTransport rejects mismatched explicit block numbers on supported methods', async () => {
   const transport = await createVerifiedTransport({
     rpcUrl: PRIMARY,
     trustedBlock
@@ -97,11 +97,28 @@ test('createVerifiedTransport rejects mismatched block parameters on supported m
     async () => await client.request({ method: 'eth_call', params: [{ to: '0x1111111111111111111111111111111111111111', data: '0x' }, '0x999'] }),
     /must match trusted block/
   )
+})
 
-  await assert.rejects(
-    async () => await client.request({ method: 'eth_getCode', params: ['0x1111111111111111111111111111111111111111', 'latest'] }),
-    /must match trusted block/
-  )
+test('createVerifiedTransport normalizes "latest" and "safe" block tags to the trusted block', async () => {
+  const transport = await createVerifiedTransport({
+    rpcUrl: PRIMARY,
+    trustedBlock
+  })
+
+  const client = createPublicClient({ transport })
+
+  // Both "latest" and "safe" should be accepted (normalized to the trusted block number).
+  // The calls will fail further down the verification stack — not with a block-mismatch error.
+  for (const tag of ['latest', 'safe', 'finalized'] as const) {
+    await assert.rejects(
+      async () => await client.request({ method: 'eth_getCode', params: ['0x1111111111111111111111111111111111111111', tag] }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error)
+        assert.doesNotMatch(err.message, /must match trusted block/)
+        return true
+      }
+    )
+  }
 })
 
 test('createVerifiedTransport rejects invalid parameter counts on supported methods', async () => {

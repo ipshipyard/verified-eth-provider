@@ -45,6 +45,8 @@ All requests are pinned to the trusted block number. Only the following read-onl
 | `eth_getCode` | The RPC response is verified: an account proof is fetched and checked against the trusted `stateRoot`, then the returned code is checked against the `codeHash` in that proof. |
 | `eth_call` | Only zero-value calls are supported. An access list is obtained via `eth_createAccessList`, account/storage proofs and code for all accessed addresses are fetched and verified, then the call is executed locally against that verified state snapshot. Retried up to three times if the access list proves incomplete. State overrides are not supported. Calls that execute `BLOBBASEFEE` fail. |
 
+**Block tag normalization:** callers that do not specify a block number — including viem (which defaults to `"latest"`) and post-merge tooling that uses `"safe"` or `"finalized"` — are automatically pinned to the trusted block number. The tags `"latest"`, `"safe"`, and `"finalized"` are treated as aliases for the trusted block; any other explicit block parameter that does not match the trusted block number is rejected.
+
 ## Example
 
 ```ts
