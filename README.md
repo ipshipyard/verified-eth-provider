@@ -27,9 +27,17 @@ Returns a `VerifiedTransport` — a standard `viem` `Transport` with two extra f
 
 Returns a `TrustedBlockProvider` suitable for passing as `config.trustedBlock`. On each call it:
 
-1. Fetches the `safe` block from the primary RPC.
+1. Fetches the block at the configured `blockTag` (default: `"safe"`) from the primary RPC.
 2. Confirms the same trusted block fields (`number`, `hash`, `timestamp`, `stateRoot`, `baseFeePerGas`, `gasLimit`, `miner`, and `mixHash`) from both witness RPCs.
 3. Rejects the block if it is older than `maxSafeBlockAgeMs`.
+
+The `blockTag` config option controls which block the primary RPC fetches:
+
+| `blockTag` | Description |
+|---|---|
+| `"safe"` (default) | Post-merge beacon chain checkpoint, confirmed by ≥2 epochs (~64 blocks). |
+| `"finalized"` | Fully finalized beacon chain block; more conservative than `"safe"`. |
+| `"latest"` | Most recent block; fastest, but offers the least reorg protection. |
 
 Notes:
 

@@ -2,6 +2,14 @@ export interface QuorumTrustedBlockSelectorConfig {
   primaryRpc: string
   witnessRpcs: [string, string]
   maxSafeBlockAgeMs: number
+  /**
+   * Block tag to fetch from the primary RPC. Defaults to `"safe"`.
+   *
+   * - `"safe"` — post-merge beacon chain checkpoint, confirmed by ≥2 epochs (~64 blocks).
+   * - `"finalized"` — fully finalized beacon chain block; more conservative than `"safe"`.
+   * - `"latest"` — most recent block; fastest, but offers the least reorg protection.
+   */
+  blockTag?: 'latest' | 'safe' | 'finalized'
 }
 
 export interface QuorumTrustedBlockSelectorOptions {

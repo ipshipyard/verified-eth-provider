@@ -87,22 +87,23 @@ async function confirmBlockWithWitnesses (block: TrustedBlock, witnessRpcs: [str
 }
 
 /**
- * Creates a {@link TrustedBlockProvider} that selects a safe block by quorum: the primary RPC
- * fetches the latest `safe` block and both witness RPCs must independently confirm the same
- * TrustedBlock fields (number/hash/timestamp/stateRoot/baseFeePerGas/gasLimit/miner/mixHash) before it is trusted.
+ * Creates a {@link TrustedBlockProvider} that selects a trusted block by quorum: the primary RPC
+ * fetches the block at the configured `blockTag` (default: `"safe"`) and both witness RPCs must
+ * independently confirm the same TrustedBlock fields
+ * (number/hash/timestamp/stateRoot/baseFeePerGas/gasLimit/miner/mixHash) before it is trusted.
  *
  * All three RPC endpoints must point to Ethereum mainnet. No chain ID verification is performed —
  * quorum detects endpoint disagreement, not unanimous misconfiguration.
  */
 export function createQuorumTrustedBlockSelector (config: QuorumTrustedBlockSelectorConfig, options: QuorumTrustedBlockSelectorOptions = {}): TrustedBlockProvider {
   return async (signal?: AbortSignal): Promise<TrustedBlock> => {
-    const { primaryRpc, witnessRpcs, maxSafeBlockAgeMs } = config
+    const { primaryRpc, witnessRpcs, maxSafeBlockAgeMs, blockTag = 'safe' } = config
 
-    const safeBlock = await getBlockByNumber(primaryRpc, 'safe', signal)
-    await confirmBlockWithWitnesses(safeBlock, witnessRpcs, signal)
-    assertBlockFreshness(safeBlock, maxSafeBlockAgeMs)
+    const primaryBlock = await getBlockByNumber(primaryRpc, blockTag, signal)
+    await confirmBlockWithWitnesses(primaryBlock, witnessRpcs, signal)
+    assertBlockFreshness(primaryBlock, maxSafeBlockAgeMs)
 
-    options.log?.('safe block from primary: %s hash=%s', safeBlock.number, safeBlock.hash)
-    return safeBlock
+    options.log?.('%s block from primary: %s hash=%s', blockTag, primaryBlock.number, primaryBlock.hash)
+    return primaryBlock
   }
 }

@@ -83,6 +83,36 @@ test('createQuorumTrustedBlockSelector returns safe block when all RPCs agree', 
   })
 })
 
+test('createQuorumTrustedBlockSelector uses the configured blockTag for the primary RPC call', async () => {
+  let capturedPrimaryParam: string | undefined
+
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = typeof input === 'string' ? input : input.toString()
+    const body = JSON.parse(String(init?.body ?? '{}')) as { method: string, params?: unknown[], id?: number }
+    if (url === PRIMARY && body.method === 'eth_getBlockByNumber') {
+      capturedPrimaryParam = body.params?.[0] as string
+    }
+    return new Response(JSON.stringify({ jsonrpc: '2.0', id: body.id ?? 1, result: block }), { status: 200 })
+  }) as typeof fetch
+
+  try {
+    for (const tag of ['latest', 'safe', 'finalized'] as const) {
+      capturedPrimaryParam = undefined
+      const selector = createQuorumTrustedBlockSelector({
+        primaryRpc: PRIMARY,
+        witnessRpcs: [WITNESS_A, WITNESS_B],
+        maxSafeBlockAgeMs: 1_000_000,
+        blockTag: tag
+      })
+      await selector()
+      assert.equal(capturedPrimaryParam, tag)
+    }
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test('createQuorumTrustedBlockSelector rejects when witness trusted block fields mismatch', async () => {
   await withMockFetch([
     { url: PRIMARY, method: 'eth_getBlockByNumber', result: block },
