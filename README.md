@@ -84,9 +84,12 @@ const client = createPublicClient({ chain: mainnet, transport })
 ## Development
 
 ```bash
+npm run build
 npm test
 npm run typecheck
 ```
+
+The published package surface is the built `dist/` output. Git installs build that output via the package `prepare` script, so consuming a Git SHA works without requiring downstream projects to execute this package's TypeScript sources directly from `node_modules`.
 
 # License
 
