@@ -38,9 +38,9 @@
   "dependencies": {
     "@ethereumjs/common": "^10.1.1",
     "@ethereumjs/evm": "^10.1.1",
+    "@ethereumjs/mpt": "^10.1.1",
     "@ethereumjs/rlp": "^10.1.1",
     "@ethereumjs/statemanager": "^10.1.1",
-    "@ethereumjs/trie": "^6.2.1",
     "@ethereumjs/util": "^10.1.1",
     "buffer": "^6.0.3",
     "events": "^3.3.0",

@@ -12,7 +12,7 @@ import { executeVerifiedLocalCall, LocalCallExecutionError } from './verified-lo
 import type { AccessListResult } from './helpers.js'
 import type { TrustedBlock } from './types.js'
 import type { Proof } from '@ethereumjs/common'
-import type { Trie } from '@ethereumjs/trie'
+import type { MerklePatriciaTrie, MPTOpts } from '@ethereumjs/mpt'
 
 interface VerifiedAccountState {
   nonce: Uint8Array
@@ -60,7 +60,7 @@ export interface VerifiedStateBundle {
 }
 
 interface ProofTools {
-  Trie: typeof Trie
+  createMPTFromProof(proof: Uint8Array[], trieOpts?: MPTOpts): Promise<MerklePatriciaTrie>
   rlpDecode(input: Uint8Array): any
 }
 
@@ -94,15 +94,15 @@ async function loadProofTools (): Promise<ProofTools> {
   }
 
   const [
-    { Trie },
+    { createMPTFromProof },
     { decode: rlpDecode }
   ] = await Promise.all([
-    import('@ethereumjs/trie'),
+    import('@ethereumjs/mpt'),
     import('@ethereumjs/rlp')
   ])
 
   const tools: ProofTools = {
-    Trie,
+    createMPTFromProof,
     rlpDecode
   }
 
@@ -459,11 +459,11 @@ class SingleRpcEthVerifier implements SingleRpcVerifier {
     const addressBytes = hexTools.hexToBytes(expectedAddress as `0x${string}`)
     const stateRootBytes = hexTools.hexToBytes(block.stateRoot as `0x${string}`)
 
-    let proofTrie: Trie
+    let proofTrie: MerklePatriciaTrie
     try {
-      proofTrie = await proofTools.Trie.createFromProof(accountProofNodes, { root: stateRootBytes, useKeyHashing: true })
+      proofTrie = await proofTools.createMPTFromProof(accountProofNodes, { root: stateRootBytes, useKeyHashing: true })
     } catch (err) {
-      throw new Error(`Account proof createFromProof failed for ${expectedAddress} at block ${block.number}: ${err instanceof Error ? err.message : String(err)}`)
+      throw new Error(`Account proof createMPTFromProof failed for ${expectedAddress} at block ${block.number}: ${err instanceof Error ? err.message : String(err)}`)
     }
 
     let accountValue: Uint8Array | null
