@@ -1,12 +1,12 @@
 import { custom } from 'viem'
-import { createSingleRpcVerifier } from './provider.ts'
-import { validateTrustedBlock } from './helpers.ts'
+import { createSingleRpcVerifier } from './provider.js'
+import { validateTrustedBlock } from './helpers.js'
 import type {
   TrustedBlock,
   VerifiedTransport,
   VerifiedTransportConfig,
   VerifiedTransportOptions
-} from './types.ts'
+} from './types.js'
 
 export async function createVerifiedTransport (
   config: VerifiedTransportConfig,

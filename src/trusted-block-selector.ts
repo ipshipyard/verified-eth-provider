@@ -1,11 +1,11 @@
-import { assertBlockFreshness, validateTrustedBlock } from './helpers.ts'
-import { ethCall } from './json-rpc.ts'
+import { assertBlockFreshness, validateTrustedBlock } from './helpers.js'
+import { ethCall } from './json-rpc.js'
 import type {
   QuorumTrustedBlockSelectorConfig,
   QuorumTrustedBlockSelectorOptions,
   TrustedBlock,
   TrustedBlockProvider
-} from './types.ts'
+} from './types.js'
 
 function parseTrustedBlock (value: unknown, rpcUrl: string, blockRef: string): TrustedBlock {
   if (value == null || typeof value !== 'object') {

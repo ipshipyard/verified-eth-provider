@@ -1,4 +1,4 @@
-import { executeVerifiedLocalCall, LocalCallExecutionError } from './verified-local-call.ts'
+import { executeVerifiedLocalCall, LocalCallExecutionError } from './verified-local-call.js'
 import {
   type AccessListResult,
   chunkArray,
@@ -8,13 +8,13 @@ import {
   isRetryableLocalExecutionError,
   mergeAccessLists,
   runWithConcurrency
-} from './helpers.ts'
-import { ethCall, ethBatchCall } from './json-rpc.ts'
+} from './helpers.js'
+import { ethCall, ethBatchCall } from './json-rpc.js'
 import type { Trie } from '@ethereumjs/trie'
 import type { Proof } from '@ethereumjs/common'
 import type {
   TrustedBlock
-} from './types.ts'
+} from './types.js'
 
 interface VerifiedAccountState {
   nonce: Uint8Array

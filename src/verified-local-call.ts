@@ -2,8 +2,8 @@ import { Common, Mainnet } from '@ethereumjs/common'
 import { createEVM } from '@ethereumjs/evm'
 import { fromMerkleStateProof } from '@ethereumjs/statemanager'
 import { bytesToHex, createAddressFromString, hexToBytes } from '@ethereumjs/util'
-import type { VerifiedStateBundle } from './provider.ts'
-import type { TrustedBlock } from './types.ts'
+import type { VerifiedStateBundle } from './provider.js'
+import type { TrustedBlock } from './types.js'
 
 interface VerifiedLocalCallArgs {
   from: string

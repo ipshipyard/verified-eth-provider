@@ -1,5 +1,5 @@
-export { createVerifiedTransport } from './transport.ts'
-export { createQuorumTrustedBlockSelector } from './trusted-block-selector.ts'
+export { createVerifiedTransport } from './transport.js'
+export { createQuorumTrustedBlockSelector } from './trusted-block-selector.js'
 export type {
   QuorumTrustedBlockSelectorConfig,
   QuorumTrustedBlockSelectorOptions,
@@ -8,4 +8,4 @@ export type {
   VerifiedTransport,
   VerifiedTransportConfig,
   VerifiedTransportOptions
-} from './types.ts'
+} from './types.js'

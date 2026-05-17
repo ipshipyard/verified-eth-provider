@@ -1,4 +1,4 @@
-import type { TrustedBlock } from './types.ts'
+import type { TrustedBlock } from './types.js'
 
 export interface AccessListEntry {
   address: string
