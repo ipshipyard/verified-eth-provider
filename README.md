@@ -92,6 +92,22 @@ npm run typecheck
 
 The published package surface is the built `dist/` output. Git installs build that output via the package `prepare` script, so consuming a Git SHA works without requiring downstream projects to execute this package's TypeScript sources directly from `node_modules`.
 
+`npm test` includes a browser-targeted smoke test that exercises the standard package entry under the same kind of bundle used by service-worker consumers such as service-worker-gateway.
+
+## Browser Bundling
+
+Service-worker consumers currently need to replace `process.env.DEBUG` at bundle time to work around https://github.com/ethereumjs/ethereumjs-monorepo/pull/4265.
+
+For esbuild-based consumers, this works:
+
+```js
+define: {
+  'process.env.DEBUG': 'undefined'
+}
+```
+
+This is a temporary downstream workaround until the upstream fix is released.
+
 # License
 
 Licensed under either of
