@@ -1,0 +1,54 @@
+{
+  "name": "@ipshipyard/verified-eth-provider",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "types": "./dist/src/index.d.ts",
+  "files": [
+    "src",
+    "dist",
+    "!dist/test",
+    "!**/*.tsbuildinfo"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "eslintConfig": {
+    "extends": "ipfs",
+    "parserOptions": {
+      "project": true,
+      "sourceType": "module"
+    }
+  },
+  "sideEffects": false,
+  "scripts": {
+    "clean": "aegir clean dist",
+    "build": "npm run clean && tsc -p tsconfig.build.json",
+    "lint": "aegir lint",
+    "dep-check": "aegir dep-check",
+    "doc-check": "aegir doc-check",
+    "prepare": "npm run build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --import tsx --test test/**/*.test.ts"
+  },
+  "dependencies": {
+    "@ethereumjs/common": "^10.1.1",
+    "@ethereumjs/evm": "^10.1.1",
+    "@ethereumjs/mpt": "^10.1.1",
+    "@ethereumjs/rlp": "^10.1.1",
+    "@ethereumjs/statemanager": "^10.1.1",
+    "@ethereumjs/util": "^10.1.1",
+    "viem": "^2.48.4"
+  },
+  "devDependencies": {
+    "aegir": "^47.1.5",
+    "@types/node": "^22.15.29",
+    "esbuild": "^0.28.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}
