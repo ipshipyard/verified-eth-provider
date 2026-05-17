@@ -68,7 +68,7 @@ test('createQuorumTrustedBlockSelector returns safe block when all RPCs agree', 
     { url: WITNESS_A, method: 'eth_getBlockByNumber', result: block },
     { url: WITNESS_B, method: 'eth_getBlockByNumber', result: block }
   ], async () => {
-    const selector = await createQuorumTrustedBlockSelector({
+    const selector = createQuorumTrustedBlockSelector({
       primaryRpc: PRIMARY,
       witnessRpcs: [WITNESS_A, WITNESS_B],
       maxSafeBlockAgeMs: 1_000_000
@@ -119,7 +119,7 @@ test('createQuorumTrustedBlockSelector rejects when witness trusted block fields
     { url: WITNESS_A, method: 'eth_getBlockByNumber', result: { ...block, timestamp: '0x1' } },
     { url: WITNESS_B, method: 'eth_getBlockByNumber', result: block }
   ], async () => {
-    const selector = await createQuorumTrustedBlockSelector({
+    const selector = createQuorumTrustedBlockSelector({
       primaryRpc: PRIMARY,
       witnessRpcs: [WITNESS_A, WITNESS_B],
       maxSafeBlockAgeMs: 1_000_000

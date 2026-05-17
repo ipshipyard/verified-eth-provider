@@ -1,8 +1,7 @@
 import { custom } from 'viem'
-import { createSingleRpcVerifier } from './provider.js'
 import { validateTrustedBlock } from './helpers.js'
+import { createSingleRpcVerifier } from './provider.js'
 import type {
-  TrustedBlock,
   VerifiedTransport,
   VerifiedTransportConfig,
   VerifiedTransportOptions

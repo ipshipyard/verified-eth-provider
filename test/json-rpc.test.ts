@@ -17,7 +17,7 @@ function withMockFetch (responseBody: unknown, run: () => Promise<void>): Promis
 test('ethCall rejects responses missing result and error', async () => {
   await withMockFetch({ jsonrpc: '2.0', id: 1 }, async () => {
     await assert.rejects(
-      async () => await ethCall('https://rpc.example', 'eth_chainId', []),
+      async () => ethCall('https://rpc.example', 'eth_chainId', []),
       /malformed response.*missing result/
     )
   })
@@ -33,7 +33,7 @@ test('ethCall accepts explicit null results', async () => {
 test('ethBatchCall rejects batch items missing result and error', async () => {
   await withMockFetch([{ jsonrpc: '2.0', id: 1 }], async () => {
     await assert.rejects(
-      async () => await ethBatchCall('https://rpc.example', [{ method: 'eth_getCode', params: ['0x1', '0x2'] }]),
+      async () => ethBatchCall('https://rpc.example', [{ method: 'eth_getCode', params: ['0x1', '0x2'] }]),
       /malformed batch response.*missing result/
     )
   })

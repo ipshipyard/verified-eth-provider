@@ -98,11 +98,13 @@ export async function executeVerifiedLocalCall (args: VerifiedLocalCallArgs): Pr
 
   if (result.execResult.exceptionError != null) {
     const evmError = result.execResult.exceptionError.error
-    const reason: 'revert' | 'out-of-gas' | 'other' = 
-      evmError === 'revert' ? 'revert' : 
-      evmError === 'out of gas' || evmError === 'code store out of gas' ? 'out-of-gas' :
-      'other'
-    
+    let reason: 'revert' | 'out-of-gas' | 'other' = 'other'
+    if (evmError === 'revert') {
+      reason = 'revert'
+    } else if (evmError === 'out of gas' || evmError === 'code store out of gas') {
+      reason = 'out-of-gas'
+    }
+
     const revertData = result.execResult.returnValue.length > 0
       ? bytesToHex(result.execResult.returnValue)
       : undefined

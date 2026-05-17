@@ -85,6 +85,7 @@ const client = createPublicClient({ chain: mainnet, transport })
 
 ```bash
 npm run build
+npm run lint
 npm test
 npm run typecheck
 ```

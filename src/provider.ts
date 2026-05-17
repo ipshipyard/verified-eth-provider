@@ -1,6 +1,4 @@
-import { executeVerifiedLocalCall, LocalCallExecutionError } from './verified-local-call.js'
 import {
-  type AccessListResult,
   chunkArray,
   ensureHexAddress,
   ensureHexData,
@@ -10,11 +8,11 @@ import {
   runWithConcurrency
 } from './helpers.js'
 import { ethCall, ethBatchCall } from './json-rpc.js'
-import type { Trie } from '@ethereumjs/trie'
+import { executeVerifiedLocalCall, LocalCallExecutionError } from './verified-local-call.js'
+import type { AccessListResult } from './helpers.js'
+import type { TrustedBlock } from './types.js'
 import type { Proof } from '@ethereumjs/common'
-import type {
-  TrustedBlock
-} from './types.js'
+import type { Trie } from '@ethereumjs/trie'
 
 interface VerifiedAccountState {
   nonce: Uint8Array
@@ -28,7 +26,7 @@ interface SingleRpcVerifierConfig {
 }
 
 interface SingleRpcVerifierOptions {
-  log?: (...args: any[]) => void
+  log? (...args: any[]): void
 }
 
 interface SingleRpcVerifier {
@@ -63,13 +61,13 @@ export interface VerifiedStateBundle {
 
 interface ProofTools {
   Trie: typeof Trie
-  rlpDecode: (input: Uint8Array) => any
+  rlpDecode(input: Uint8Array): any
 }
 
 interface HexTools {
-  hexToBytes: (value: `0x${string}`) => Uint8Array
-  bytesToHex: (value: Uint8Array) => `0x${string}`
-  keccak256: (value: `0x${string}`) => `0x${string}`
+  hexToBytes(value: `0x${string}`): Uint8Array
+  bytesToHex(value: Uint8Array): `0x${string}`
+  keccak256(value: `0x${string}`): `0x${string}`
 }
 
 const MAX_VERIFIED_CALL_RETRIES = 3
@@ -197,7 +195,10 @@ class SingleRpcEthVerifier implements SingleRpcVerifier {
     try {
       return await ethBatchCall<Proof>(this.config.rpcUrl, calls, signal)
     } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') throw err
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw err
+      }
+
       return Promise.all(addressesAndSlots.map(async ({ address, storageKeys }) =>
         this.getProof(address, storageKeys, blockNumber, signal)
       ))
@@ -213,7 +214,10 @@ class SingleRpcEthVerifier implements SingleRpcVerifier {
     try {
       return await ethBatchCall<`0x${string}`>(this.config.rpcUrl, calls, signal)
     } catch (err) {
-      if (err instanceof Error && err.name === 'AbortError') throw err
+      if (err instanceof Error && err.name === 'AbortError') {
+        throw err
+      }
+
       return Promise.all(addresses.map(async address =>
         ethCall<`0x${string}`>(this.config.rpcUrl, 'eth_getCode', [address, blockNumber], signal)
       ))

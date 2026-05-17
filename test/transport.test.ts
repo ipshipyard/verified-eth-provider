@@ -3,49 +3,6 @@ import test from 'node:test'
 import { createPublicClient } from 'viem'
 import { createVerifiedTransport } from '../src/index.ts'
 
-interface MockRule {
-  url: string
-  method: string
-  result?: unknown
-  error?: { code: number, message: string }
-}
-
-function withMockFetch (rules: MockRule[], run: () => Promise<void>): Promise<void> {
-  const originalFetch = globalThis.fetch
-
-  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-    const url = typeof input === 'string' ? input : input.toString()
-    const body = JSON.parse(String(init?.body ?? '{}')) as { method: string, id?: number }
-    const rule = rules.find(item => item.url === url && item.method === body.method)
-
-    if (rule == null) {
-      return new Response(JSON.stringify({
-        jsonrpc: '2.0',
-        id: body.id ?? 1,
-        error: { code: -32601, message: `No mock for ${url} ${body.method}` }
-      }), { status: 200 })
-    }
-
-    if (rule.error != null) {
-      return new Response(JSON.stringify({
-        jsonrpc: '2.0',
-        id: body.id ?? 1,
-        error: rule.error
-      }), { status: 200 })
-    }
-
-    return new Response(JSON.stringify({
-      jsonrpc: '2.0',
-      id: body.id ?? 1,
-      result: rule.result
-    }), { status: 200 })
-  }) as typeof fetch
-
-  return run().finally(() => {
-    globalThis.fetch = originalFetch
-  })
-}
-
 const PRIMARY = 'https://primary.example/rpc'
 
 const trustedBlock = {
@@ -94,7 +51,7 @@ test('createVerifiedTransport rejects mismatched explicit block numbers on suppo
   const client = createPublicClient({ transport })
 
   await assert.rejects(
-    async () => await client.request({ method: 'eth_call', params: [{ to: '0x1111111111111111111111111111111111111111', data: '0x' }, '0x999'] }),
+    async () => client.request({ method: 'eth_call', params: [{ to: '0x1111111111111111111111111111111111111111', data: '0x' }, '0x999'] }),
     /must match trusted block/
   )
 })
@@ -111,7 +68,7 @@ test('createVerifiedTransport normalizes "latest" and "safe" block tags to the t
   // The calls will fail further down the verification stack — not with a block-mismatch error.
   for (const tag of ['latest', 'safe', 'finalized'] as const) {
     await assert.rejects(
-      async () => await client.request({ method: 'eth_getCode', params: ['0x1111111111111111111111111111111111111111', tag] }),
+      async () => client.request({ method: 'eth_getCode', params: ['0x1111111111111111111111111111111111111111', tag] }),
       (err: unknown) => {
         assert.ok(err instanceof Error)
         assert.doesNotMatch(err.message, /must match trusted block/)
@@ -130,12 +87,12 @@ test('createVerifiedTransport rejects invalid parameter counts on supported meth
   const client = createPublicClient({ transport })
 
   await assert.rejects(
-    async () => await client.request({ method: 'eth_chainId' as any, params: [] as any }),
+    async () => client.request({ method: 'eth_chainId' as any, params: [] as any }),
     /not exposed via verified request path/
   )
 
   await assert.rejects(
-    async () => await client.request({ method: 'eth_call', params: [{ to: '0x1111111111111111111111111111111111111111', data: '0x' }, trustedBlock.number as `0x${string}`, {}] }),
+    async () => client.request({ method: 'eth_call', params: [{ to: '0x1111111111111111111111111111111111111111', data: '0x' }, trustedBlock.number as `0x${string}`, {}] }),
     /expects exactly 2 parameter/
   )
 })
@@ -149,7 +106,7 @@ test('createVerifiedTransport rejects non-zero-value eth_call requests', async (
   const client = createPublicClient({ transport })
 
   await assert.rejects(
-    async () => await client.request({ method: 'eth_call', params: [{ to: '0x1111111111111111111111111111111111111111', value: '0x1' }, trustedBlock.number as `0x${string}`] }),
+    async () => client.request({ method: 'eth_call', params: [{ to: '0x1111111111111111111111111111111111111111', value: '0x1' }, trustedBlock.number as `0x${string}`] }),
     /zero-value calls/
   )
 })

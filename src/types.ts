@@ -13,7 +13,7 @@ export interface QuorumTrustedBlockSelectorConfig {
 }
 
 export interface QuorumTrustedBlockSelectorOptions {
-  log?: (...args: any[]) => void
+  log? (...args: any[]): void
 }
 
 export interface VerifiedTransportConfig {
@@ -22,7 +22,7 @@ export interface VerifiedTransportConfig {
 }
 
 export interface VerifiedTransportOptions {
-  log?: (...args: any[]) => void
+  log? (...args: any[]): void
 }
 
 export interface TrustedBlock {
@@ -43,6 +43,6 @@ export type TrustedBlockProvider = (signal?: AbortSignal) => Promise<TrustedBloc
 
 export interface VerifiedTransport {
   (...args: Parameters<import('viem').Transport>): ReturnType<import('viem').Transport>
-  prewarmVerificationDependencies: () => Promise<void>
+  prewarmVerificationDependencies(): Promise<void>
   trustedBlock: TrustedBlock
 }
