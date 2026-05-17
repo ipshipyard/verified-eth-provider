@@ -42,8 +42,6 @@
     "@ethereumjs/rlp": "^10.1.1",
     "@ethereumjs/statemanager": "^10.1.1",
     "@ethereumjs/util": "^10.1.1",
-    "buffer": "^6.0.3",
-    "events": "^3.3.0",
     "viem": "^2.48.4"
   },
   "devDependencies": {
